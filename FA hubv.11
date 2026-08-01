@@ -1,0 +1,473 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
+
+---------------------------------------------------------
+-- [ DATA SAVE / LOAD SYSTEM ]
+---------------------------------------------------------
+local SETTINGS_FILE = "FAHub_Settings.json"
+local defaultSettings = {
+    SoundId = "",
+    WalkSpeed = 16,
+    JumpPower = 50,
+    AutoHopOnAdmin = false,
+    AimRadius = 150,
+    ThemeColor = {0, 255, 150}
+}
+local SavedSettings = {}
+
+local function loadSettings()
+    if readfile and isfile and isfile(SETTINGS_FILE) then
+        pcall(function() SavedSettings = HttpService:JSONDecode(readfile(SETTINGS_FILE)) end)
+    else
+        SavedSettings = defaultSettings
+    end
+end
+
+local function saveSettings()
+    if writefile then
+        pcall(function() writefile(SETTINGS_FILE, HttpService:JSONEncode(SavedSettings)) end)
+    end
+end
+
+loadSettings()
+
+---------------------------------------------------------
+-- [ CHAT COMMANDS: /tp [name] & !RJ ]
+---------------------------------------------------------
+LocalPlayer.Chatted:Connect(function(msg)
+    local args = string.split(msg, " ")
+    local cmd = string.lower(args[1])
+    
+    if cmd == "!rj" then
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    elseif cmd == "/tp" and args[2] then
+        local targetName = string.lower(args[2])
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and (string.find(string.lower(p.Name), targetName) or string.find(string.lower(p.DisplayName), targetName)) then
+                if p.Character and p.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                    LocalPlayer.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+                end
+                break
+            end
+        end
+    end
+end)
+
+---------------------------------------------------------
+-- [ ANTI-ADMIN SYSTEM ]
+---------------------------------------------------------
+local function checkAdmin(player)
+    if player == LocalPlayer then return end
+    pcall(function()
+        if player:GetRankInGroup(game.CreatorId) >= 200 or player.UserId == game.CreatorId then
+            print("⚠️ [FA Hub Warning] Admin Detected: " .. player.Name)
+            if SavedSettings.AutoHopOnAdmin then
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end
+        end
+    end)
+end
+Players.PlayerAdded:Connect(checkAdmin)
+for _, p in pairs(Players:GetPlayers()) do checkAdmin(p) end
+
+---------------------------------------------------------
+-- [ MUSIC SYSTEM ]
+---------------------------------------------------------
+local bgmSound = workspace:FindFirstChild("FAHubBGM") or Instance.new("Sound", workspace)
+bgmSound.Name = "FAHubBGM"
+bgmSound.Looped = true
+bgmSound.Volume = 0.5
+
+if SavedSettings.SoundId and SavedSettings.SoundId ~= "" then
+    bgmSound.SoundId = "rbxassetid://" .. SavedSettings.SoundId
+    bgmSound:Play()
+end
+
+---------------------------------------------------------
+-- [ AIMBOT & FOV CIRCLE SYSTEM ]
+---------------------------------------------------------
+local AimbotEnabled = false
+local Aiming = false
+local FOVVisible = false
+
+local CurrentThemeColor = Color3.fromRGB(SavedSettings.ThemeColor[1] or 0, SavedSettings.ThemeColor[2] or 255, SavedSettings.ThemeColor[3] or 150)
+
+local FOVCircle = nil
+if Drawing then
+    FOVCircle = Drawing.new("Circle")
+    FOVCircle.Thickness = 1.5
+    FOVCircle.Color = CurrentThemeColor
+    FOVCircle.Filled = false
+    FOVCircle.Transparency = 0.8
+    FOVCircle.Visible = false
+end
+
+local function getClosestPlayer()
+    local closestPlayer = nil
+    local shortestDistance = SavedSettings.AimRadius or 150
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") and player.Character:FindFirstChildOfClass("Humanoid") then
+            if player.Character:FindFirstChildOfClass("Humanoid").Health > 0 then
+                local part = player.Character.Head
+                local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                if onScreen then
+                    local mousePos = UserInputService:GetMouseLocation()
+                    local distance = (Vector2.new(pos.X, pos.Y) - mousePos).Magnitude
+                    if distance < shortestDistance then
+                        closestPlayer = player
+                        shortestDistance = distance
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.UserInputType == Enum.UserInputType.MouseButton2 then Aiming = true end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then Aiming = false end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if FOVCircle then
+        local mousePos = UserInputService:GetMouseLocation()
+        FOVCircle.Position = mousePos
+        FOVCircle.Radius = SavedSettings.AimRadius or 150
+        FOVCircle.Visible = FOVVisible
+    end
+
+    if AimbotEnabled and Aiming then
+        local target = getClosestPlayer()
+        if target and target.Character and target.Character:FindFirstChild("Head") then
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, target.Character.Head.Position)
+        end
+    end
+end)
+
+---------------------------------------------------------
+-- [ NOCLIP SYSTEM ]
+---------------------------------------------------------
+local NoclipEnabled = false
+RunService.Stepped:Connect(function()
+    if NoclipEnabled and LocalPlayer.Character then
+        for _, p in pairs(LocalPlayer.Character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end
+end)
+
+---------------------------------------------------------
+-- [ SERVER HOP ]
+---------------------------------------------------------
+local function LowServerHop()
+    local placeId = game.PlaceId
+    local servers = {}
+    local req = request or http_request or (syn and syn.request)
+    if req then
+        local res = req({Url = string.format("https://games.roblox.com/v1/games/%d/servers/0?sortOrder=Asc&limit=100", placeId)})
+        local body = HttpService:JSONDecode(res.Body)
+        if body and body.data then
+            for _, v in pairs(body.data) do
+                if type(v) == "table" and v.playing < v.maxPlayers and v.id ~= game.JobId then
+                    table.insert(servers, v.id)
+                end
+            end
+        end
+    end
+    if #servers > 0 then
+        TeleportService:TeleportToPlaceInstance(placeId, servers[math.random(1, #servers)], LocalPlayer)
+    else
+        TeleportService:Teleport(placeId, LocalPlayer)
+    end
+end
+
+---------------------------------------------------------
+-- [ GUI MAIN SETUP (FIXED LAYOUT) ]
+---------------------------------------------------------
+local ScreenGui = PlayerGui:FindFirstChild("FAGui") or Instance.new("ScreenGui")
+ScreenGui.Name = "FAGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = PlayerGui
+
+local MainFrame = ScreenGui:FindFirstChild("MainFrame") or Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 360, 0, 420)
+MainFrame.Position = UDim2.new(0.35, 0, 0.2, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+MainFrame.BackgroundTransparency = 0.1
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = ScreenGui
+
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+
+-- Toggle Button (ปุ่มซ่อน/แสดง)
+local ToggleBtn = ScreenGui:FindFirstChild("FA_ToggleBtn") or Instance.new("TextButton")
+ToggleBtn.Name = "FA_ToggleBtn"
+ToggleBtn.Size = UDim2.new(0, 45, 0, 45)
+ToggleBtn.Position = UDim2.new(0, 15, 0.4, 0)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+ToggleBtn.BackgroundTransparency = 0.2
+ToggleBtn.Text = "FA"
+ToggleBtn.TextColor3 = CurrentThemeColor
+ToggleBtn.Font = Enum.Font.SourceSansBold
+ToggleBtn.TextSize = 18
+ToggleBtn.Active = true
+ToggleBtn.Draggable = true
+ToggleBtn.Parent = ScreenGui
+
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(1, 0)
+local ToggleUIStroke = Instance.new("UIStroke", ToggleBtn)
+ToggleUIStroke.Color = CurrentThemeColor
+ToggleUIStroke.Thickness = 2
+
+local guiVisible = true
+local function toggleGUI()
+    guiVisible = not guiVisible
+    MainFrame.Visible = guiVisible
+end
+
+ToggleBtn.MouseButton1Click:Connect(toggleGUI)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.RightControl then toggleGUI() end
+end)
+
+-- Title Header
+local Title = Instance.new("TextLabel", MainFrame)
+Title.Size = UDim2.new(1, -40, 0, 35)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.Text = "FA Hub V.10 | Fixed UI"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.BackgroundTransparency = 1
+Title.Font = Enum.Font.Garamond
+Title.TextSize = 18
+
+local CloseBtn = Instance.new("TextButton", MainFrame)
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -35, 0, 3)
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Font = Enum.Font.SourceSansBold
+CloseBtn.TextSize = 18
+CloseBtn.MouseButton1Click:Connect(toggleGUI)
+
+---------------------------------------------------------
+-- [ FIXED TAB SYSTEM ]
+---------------------------------------------------------
+local TabBar = Instance.new("ScrollingFrame", MainFrame)
+TabBar.Size = UDim2.new(1, -20, 0, 35)
+TabBar.Position = UDim2.new(0, 10, 0, 38)
+TabBar.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+TabBar.BackgroundTransparency = 0.5
+TabBar.ScrollBarThickness = 2
+TabBar.CanvasSize = UDim2.new(0, 480, 0, 0) -- ขยายความกว้างแท็บให้เลื่อนง่าย
+Instance.new("UICorner", TabBar).CornerRadius = UDim.new(0, 6)
+
+local TabBarLayout = Instance.new("UIListLayout", TabBar)
+TabBarLayout.FillDirection = Enum.FillDirection.Horizontal
+TabBarLayout.SortOrder = Enum.SortOrder.LayoutOrder
+TabBarLayout.Padding = UDim.new(0, 5)
+
+local ContentContainer = Instance.new("Frame", MainFrame)
+ContentContainer.Size = UDim2.new(1, -20, 1, -85)
+ContentContainer.Position = UDim2.new(0, 10, 0, 80)
+ContentContainer.BackgroundTransparency = 1
+
+local Pages = {}
+
+local function createPage()
+    local page = Instance.new("ScrollingFrame", ContentContainer)
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.ScrollBarThickness = 4
+    page.Visible = false
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y -- ปรับความยาวหน้าอัตโนมัติ แก้บั๊กลอย
+    
+    local layout = Instance.new("UIListLayout", page)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 6) -- เรียงปุ่มแนวตั้งอัตโนมัติ
+    
+    return page
+end
+
+local PageMain     = createPage()
+local PageCombat   = createPage()
+local PageVisual   = createPage()
+local PageMusic    = createPage()
+local PageSettings = createPage()
+PageMain.Visible = true
+
+local function createTabBtn(text, page)
+    local btn = Instance.new("TextButton", TabBar)
+    btn.Size = UDim2.new(0, 90, 1, 0)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(220, 220, 220)
+    btn.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
+    btn.BackgroundTransparency = 0.2
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 12
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    
+    btn.MouseButton1Click:Connect(function()
+        PageMain.Visible = false; PageCombat.Visible = false; PageVisual.Visible = false; PageMusic.Visible = false; PageSettings.Visible = false
+        page.Visible = true
+    end)
+    return btn
+end
+
+createTabBtn("หลัก (Main)", PageMain)
+createTabBtn("🎯 ต่อสู้", PageCombat)
+createTabBtn("👁️ มองเห็น", PageVisual)
+createTabBtn("🎵 เพลง", PageMusic)
+createTabBtn("⚙️ ตั้งค่า", PageSettings)
+
+-- Component Helpers (ใช้อัตโนมัติร่วมกับ UIListLayout)
+local function createButton(parent, text, callback)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = UDim2.new(1, -8, 0, 32)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(240, 240, 240)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    btn.BackgroundTransparency = 0.3
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 13
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+local function createInput(parent, placeholder)
+    local box = Instance.new("TextBox", parent)
+    box.Size = UDim2.new(1, -8, 0, 32)
+    box.PlaceholderText = placeholder
+    box.Text = ""
+    box.TextColor3 = Color3.fromRGB(255, 255, 255)
+    box.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+    box.BackgroundTransparency = 0.3
+    box.Font = Enum.Font.SourceSans
+    box.TextSize = 13
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
+    return box
+end
+
+---------------------------------------------------------
+-- [ TAB 1: MAIN ]
+---------------------------------------------------------
+local SpeedInput = createInput(PageMain, "ความเร็ว WalkSpeed (1 - 2000)...")
+SpeedInput.Text = tostring(SavedSettings.WalkSpeed or 16)
+
+local JumpInput = createInput(PageMain, "แรงกระโดด JumpPower (1 - 2000)...")
+JumpInput.Text = tostring(SavedSettings.JumpPower or 50)
+
+createButton(PageMain, "⚡ ยืนยันปรับความเร็ว & แรงกระโดด", function()
+    local speedVal = math.clamp(tonumber(SpeedInput.Text) or 16, 1, 2000)
+    local jumpVal = math.clamp(tonumber(JumpInput.Text) or 50, 1, 2000)
+    
+    SpeedInput.Text = tostring(speedVal)
+    JumpInput.Text = tostring(jumpVal)
+    SavedSettings.WalkSpeed = speedVal
+    SavedSettings.JumpPower = jumpVal
+    
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        hum.WalkSpeed = speedVal
+        hum.UseJumpPower = true
+        hum.JumpPower = jumpVal
+    end
+end)
+
+local NoclipBtn = createButton(PageMain, "👻 เปิด / ปิด Noclip (เดินทะลุ)", function()
+    NoclipEnabled = not NoclipEnabled
+    NoclipBtn.Text = NoclipEnabled and "👻 Noclip เดินทะลุ: เปิด [ON]" or "👻 เปิด / ปิด Noclip (เดินทะลุ)"
+end)
+
+createButton(PageMain, "🌐 Server Hop (ย้ายไปเซิร์ฟคนน้อย)", function() LowServerHop() end)
+
+---------------------------------------------------------
+-- [ TAB 2: COMBAT ]
+---------------------------------------------------------
+local AimBtn = createButton(PageCombat, "🎯 เปิด / ปิด Aimbot (คลิกขวาค้าง)", function()
+    AimbotEnabled = not AimbotEnabled
+    AimBtn.Text = AimbotEnabled and "🎯 Aimbot ล็อกหัว: เปิด [ON]" or "🎯 เปิด / ปิด Aimbot (คลิกขวาค้าง)"
+end)
+
+local FOVBtn = createButton(PageCombat, "⭕ เปิด / ปิด วงกลม FOV", function()
+    FOVVisible = not FOVVisible
+    FOVBtn.Text = FOVVisible and "⭕ วงกลม FOV: เปิด [ON]" or "⭕ เปิด / ปิด วงกลม FOV"
+end)
+
+---------------------------------------------------------
+-- [ TAB 3: VISUAL ]
+---------------------------------------------------------
+createButton(PageVisual, "☀️ เปิดสว่าง Fullbright & ลบหมอก", function()
+    Lighting.Brightness = 2
+    Lighting.ClockTime = 14
+    Lighting.GlobalShadows = false
+    Lighting.FogEnd = 9e9
+    for _, v in pairs(Lighting:GetChildren()) do
+        if v:IsA("Atmosphere") or v:IsA("Sky") then v:Destroy() end
+    end
+end)
+
+---------------------------------------------------------
+-- [ TAB 4: MUSIC ]
+---------------------------------------------------------
+local SoundInput = createInput(PageMusic, "ใส่ Sound ID...")
+createButton(PageMusic, "▶ เล่นเพลง (Play)", function()
+    local id = tonumber(SoundInput.Text)
+    if id then
+        SavedSettings.SoundId = tostring(id)
+        bgmSound.SoundId = "rbxassetid://" .. id
+        bgmSound:Play()
+    end
+end)
+createButton(PageMusic, "⏹️ หยุดเพลง", function() bgmSound:Stop() end)
+
+---------------------------------------------------------
+-- [ TAB 5: SETTINGS ]
+---------------------------------------------------------
+local function updateTheme(r, g, b)
+    local newColor = Color3.fromRGB(r, g, b)
+    SavedSettings.ThemeColor = {r, g, b}
+    ToggleBtn.TextColor3 = newColor
+    ToggleUIStroke.Color = newColor
+    if FOVCircle then FOVCircle.Color = newColor end
+end
+
+createButton(PageSettings, "🟢 ธีมสีเขียว (Emerald Green)", function() updateTheme(0, 255, 150) end)
+createButton(PageSettings, "🔵 ธีมสีฟ้า (Neon Blue)", function() updateTheme(0, 180, 255) end)
+createButton(PageSettings, "🔴 ธีมสีแดง (Ruby Red)", function() updateTheme(255, 50, 50) end)
+createButton(PageSettings, "🟣 ธีมสีม่วง (Purple Cyber)", function() updateTheme(180, 50, 255) end)
+createButton(PageSettings, "🟡 ธีมสีทอง (Gold Deluxe)", function() updateTheme(255, 215, 0) end)
+
+createButton(PageSettings, "💾 บันทึกการตั้งค่าทั้งหมด (Save Data)", function()
+    saveSettings()
+    print("[FA Hub] เซฟเรียบร้อย!")
+end)
+
+-- Auto Apply เมื่อเกิดใหม่
+LocalPlayer.CharacterAdded:Connect(function(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if hum then
+        if SavedSettings.WalkSpeed then hum.WalkSpeed = math.clamp(SavedSettings.WalkSpeed, 1, 2000) end
+        if SavedSettings.JumpPower then hum.UseJumpPower = true hum.JumpPower = math.clamp(SavedSettings.JumpPower, 1, 2000) end
+    end
+end)
+
+print("[FA Hub V.10] Fixed UI Layout Loaded Successfully!")
